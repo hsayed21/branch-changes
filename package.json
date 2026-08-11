@@ -1,0 +1,98 @@
+{
+  "name": "open-branch-changes",
+  "displayName": "Branch Changes",
+  "description": "Show all committed changes on the current branch in VS Code's native multi-file diff editor.",
+  "version": "0.0.0",
+  "publisher": "hsayed",
+  "author": "Hamada Sayed",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.86.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "icon": "icon.png",
+  "bugs": {
+    "url": "https://github.com/hsayed21/branch-changes/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hsayed21/branch-changes.git"
+  },
+  "activationEvents": [
+    "onCommand:branchChanges.show",
+    "onCommand:branchChanges.setBase"
+  ],
+  "main": "./out/extension.js",
+  "files": [
+    "out",
+    "icon.png",
+    "README.md",
+    "LICENSE"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "branchChanges.show",
+        "title": "Show Branch Changes",
+        "category": "Branch Changes",
+        "icon": "$(diff-multiple)"
+      },
+      {
+        "command": "branchChanges.setBase",
+        "title": "Set Base Branch...",
+        "category": "Branch Changes"
+      }
+    ],
+    "menus": {
+      "scm/title": [
+        {
+          "command": "branchChanges.show",
+          "when": "scmProvider == git",
+          "group": "navigation@50"
+        },
+        {
+          "command": "branchChanges.setBase",
+          "when": "scmProvider == git",
+          "group": "2_branch@50"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Branch Changes",
+      "properties": {
+        "branchChanges.baseBranch": {
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Default base branch or ref, for example origin/develop. A base selected with 'Set Base Branch' overrides this value for the current branch."
+        },
+        "branchChanges.fallbackBaseBranches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "develop",
+            "main",
+            "master"
+          ],
+          "scope": "resource",
+          "description": "Branch names tried when the parent branch cannot be detected automatically."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "typecheck": "tsc --noEmit -p ./",
+    "watch": "tsc --watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.86.0",
+    "typescript": "^5.4.0"
+  }
+}
