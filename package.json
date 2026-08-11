@@ -2,7 +2,7 @@
   "name": "open-branch-changes",
   "displayName": "Branch Changes",
   "description": "Show all committed changes on the current branch in VS Code's native multi-file diff editor.",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "publisher": "hsayed",
   "author": "Hamada Sayed",
   "license": "MIT",
