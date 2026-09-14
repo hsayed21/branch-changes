@@ -22,15 +22,14 @@
   },
   "activationEvents": [
     "onCommand:branchChanges.show",
-    "onCommand:branchChanges.setBase"
+    "onCommand:branchChanges.setBase",
+    "onCommand:branchChanges.markReviewed",
+    "onCommand:branchChanges.markUnreviewed",
+    "onCommand:branchChanges.nextUnreviewed",
+    "onCommand:branchChanges.previousUnreviewed",
+    "onView:branchChanges.files"
   ],
   "main": "./out/extension.js",
-  "files": [
-    "out",
-    "icon.png",
-    "README.md",
-    "LICENSE"
-  ],
   "contributes": {
     "commands": [
       {
@@ -43,8 +42,82 @@
         "command": "branchChanges.setBase",
         "title": "Set Base Branch...",
         "category": "Branch Changes"
+      },
+      {
+        "command": "branchChanges.refresh",
+        "title": "Refresh",
+        "category": "Branch Changes",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "branchChanges.openAllDiffs",
+        "title": "Open All Diffs",
+        "category": "Branch Changes",
+        "icon": "$(diff-multiple)"
+      },
+      {
+        "command": "branchChanges.markReviewed",
+        "title": "Mark as Reviewed",
+        "category": "Branch Changes",
+        "icon": "$(pass)"
+      },
+      {
+        "command": "branchChanges.markUnreviewed",
+        "title": "Mark as Unreviewed",
+        "category": "Branch Changes",
+        "icon": "$(pass-filled)"
+      },
+      {
+        "command": "branchChanges.nextUnreviewed",
+        "title": "Next Unreviewed File",
+        "category": "Branch Changes",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "branchChanges.previousUnreviewed",
+        "title": "Previous Unreviewed File",
+        "category": "Branch Changes",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "branchChanges.clearMarks",
+        "title": "Clear Review Marks",
+        "category": "Branch Changes",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "branchChanges.filter",
+        "title": "Filter...",
+        "category": "Branch Changes",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "branchChanges.viewAsList",
+        "title": "View as List",
+        "category": "Branch Changes",
+        "icon": "$(list-flat)"
+      },
+      {
+        "command": "branchChanges.viewAsTree",
+        "title": "View as Tree",
+        "category": "Branch Changes",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "branchChanges.setListPathParts",
+        "title": "Set List Path Parts...",
+        "category": "Branch Changes"
       }
     ],
+    "views": {
+      "scm": [
+        {
+          "id": "branchChanges.files",
+          "name": "Branch Changes",
+          "contextualTitle": "Branch Changes"
+        }
+      ]
+    },
     "menus": {
       "scm/title": [
         {
@@ -57,8 +130,106 @@
           "when": "scmProvider == git",
           "group": "2_branch@50"
         }
+      ],
+      "view/title": [
+        {
+          "command": "branchChanges.refresh",
+          "when": "view == branchChanges.files",
+          "group": "navigation@1"
+        },
+        {
+          "command": "branchChanges.viewAsList",
+          "when": "view == branchChanges.files && branchChanges.viewMode != list",
+          "group": "navigation@2"
+        },
+        {
+          "command": "branchChanges.viewAsTree",
+          "when": "view == branchChanges.files && branchChanges.viewMode == list",
+          "group": "navigation@2"
+        },
+        {
+          "command": "branchChanges.filter",
+          "when": "view == branchChanges.files",
+          "group": "navigation@3"
+        },
+        {
+          "command": "branchChanges.openAllDiffs",
+          "when": "view == branchChanges.files",
+          "group": "navigation@4"
+        },
+        {
+          "command": "branchChanges.clearMarks",
+          "when": "view == branchChanges.files",
+          "group": "1_review@1"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "branchChanges.markReviewed",
+          "when": "view == branchChanges.files && viewItem == branchChangeFile:unreviewed",
+          "group": "inline"
+        },
+        {
+          "command": "branchChanges.markUnreviewed",
+          "when": "view == branchChanges.files && viewItem == branchChangeFile:reviewed",
+          "group": "inline"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "branchChanges.markReviewed",
+          "when": "branchChanges.activeChange && !branchChanges.activeReviewed",
+          "group": "navigation@0.1"
+        },
+        {
+          "command": "branchChanges.markUnreviewed",
+          "when": "branchChanges.activeChange && branchChanges.activeReviewed",
+          "group": "navigation@0.1"
+        },
+        {
+          "command": "branchChanges.nextUnreviewed",
+          "when": "branchChanges.activeChange",
+          "group": "navigation@0.2"
+        },
+        {
+          "command": "branchChanges.previousUnreviewed",
+          "when": "branchChanges.activeChange",
+          "group": "navigation@0.3"
+        }
       ]
     },
+    "keybindings": [
+      {
+        "command": "branchChanges.markReviewed",
+        "key": "ctrl+alt+r",
+        "mac": "cmd+alt+r",
+        "when": "editorTextFocus || focusedView == 'branchChanges.files'"
+      },
+      {
+        "command": "branchChanges.nextUnreviewed",
+        "key": "ctrl+alt+n",
+        "mac": "cmd+alt+n",
+        "when": "branchChanges.activeChange || focusedView == 'branchChanges.files'"
+      },
+      {
+        "command": "branchChanges.previousUnreviewed",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "branchChanges.activeChange || focusedView == 'branchChanges.files'"
+      }
+    ],
+    "colors": [
+      {
+        "id": "branchChanges.reviewedResourceForeground",
+        "description": "Color for reviewed files in the Branch Changes tree.",
+        "defaults": {
+          "dark": "#73c991aa",
+          "light": "#207a20aa",
+          "highContrast": "#73c991",
+          "highContrastLight": "#207a20"
+        }
+      }
+    ],
     "configuration": {
       "title": "Branch Changes",
       "properties": {
@@ -80,6 +251,27 @@
           ],
           "scope": "resource",
           "description": "Branch names tried when the parent branch cannot be detected automatically."
+        },
+        "branchChanges.sortReviewedToBottom": {
+          "type": "boolean",
+          "default": true,
+          "description": "When enabled, unreviewed files stay at the top and reviewed files move to the bottom (in both tree and list views)."
+        },
+        "branchChanges.sortByStatus": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, group files by change status (A, M, D, R, C) so same-status files appear together (in both tree and list views)."
+        },
+        "branchChanges.openNextOnReviewed": {
+          "type": "boolean",
+          "default": true,
+          "description": "When marking a file as reviewed, open the next unreviewed file's diff."
+        },
+        "branchChanges.listPathParts": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "description": "In list view, show only the last N path segments (including the file name). When the path is longer, it is prefixed with '../'. Set to 0 to show the full relative path."
         }
       }
     }
@@ -88,6 +280,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "typecheck": "tsc --noEmit -p ./",
+    "test": "npm run compile && node --test out/review/reviewState.test.js out/model/changeTreeModel.test.js",
     "watch": "tsc --watch -p ./"
   },
   "devDependencies": {
