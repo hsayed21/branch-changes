@@ -262,6 +262,11 @@
           "default": false,
           "description": "When enabled, group files by change status (A, M, D, R, C) so same-status files appear together (in both tree and list views)."
         },
+        "branchChanges.sortByChanges": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, sort files by change quantity (fewest line changes first) in both tree and list views. Takes precedence over Sort by Status. Reviewed-to-bottom still applies when that setting is on."
+        },
         "branchChanges.openNextOnReviewed": {
           "type": "boolean",
           "default": true,

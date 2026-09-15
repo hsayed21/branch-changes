@@ -5,6 +5,9 @@ export type ChangeFileNode = {
   relativePath: string;
   status: number;
   reviewed: boolean;
+  additions: number;
+  deletions: number;
+  binary: boolean;
 };
 
 export type ChangeFolderNode = {
@@ -14,6 +17,8 @@ export type ChangeFolderNode = {
   children: ChangeNode[];
   reviewedCount: number;
   totalFiles: number;
+  additions: number;
+  deletions: number;
 };
 
 export type ChangeNode = ChangeFileNode | ChangeFolderNode;
@@ -28,6 +33,16 @@ export type BuildTreeOptions = {
   sortReviewedToBottom?: boolean;
   /** When true, group files by change status (A, M, D, …) before sorting by name. */
   sortByStatus?: boolean;
+  /** When true, sort by line-change quantity (fewest first). Takes precedence over sortByStatus. */
+  sortByChanges?: boolean;
+};
+
+export type FileChangeInput = {
+  relativePath: string;
+  status: number;
+  additions?: number;
+  deletions?: number;
+  binary?: boolean;
 };
 
 /** Sort rank for status grouping: A → M → D → R → C (matches status letters in the view). */
@@ -87,11 +102,10 @@ function createRootBuilder(): FolderBuilder {
 
 function addFileToBuilder(
   root: FolderBuilder,
-  relativePath: string,
-  status: number,
+  file: FileChangeInput,
   reviewed: boolean
 ): void {
-  const segments = relativePath.split('/');
+  const segments = file.relativePath.split('/');
   segments.pop(); // file name
   let current = root;
   let pathSoFar = '';
@@ -113,9 +127,12 @@ function addFileToBuilder(
 
   current.files.push({
     kind: 'file',
-    relativePath,
-    status,
-    reviewed
+    relativePath: file.relativePath,
+    status: file.status,
+    reviewed,
+    additions: file.additions ?? 0,
+    deletions: file.deletions ?? 0,
+    binary: file.binary ?? false
   });
 }
 
@@ -133,11 +150,22 @@ export function nodeIsFullyReviewed(node: ChangeNode): boolean {
   return node.totalFiles > 0 && node.reviewedCount === node.totalFiles;
 }
 
+/** Sort key: total line changes; binary / unknown files sort last. */
+export function nodeChangeQuantity(node: ChangeNode): number {
+  if (node.kind === 'file') {
+    return node.binary
+      ? Number.MAX_SAFE_INTEGER
+      : node.additions + node.deletions;
+  }
+  return node.additions + node.deletions;
+}
+
 function compareNodes(
   a: ChangeNode,
   b: ChangeNode,
   sortReviewedToBottom: boolean,
-  sortByStatus: boolean
+  sortByStatus: boolean,
+  sortByChanges: boolean
 ): number {
   if (sortReviewedToBottom) {
     const aDone = nodeIsFullyReviewed(a);
@@ -149,7 +177,12 @@ function compareNodes(
   if (a.kind !== b.kind) {
     return a.kind === 'folder' ? -1 : 1;
   }
-  if (sortByStatus && a.kind === 'file' && b.kind === 'file') {
+  if (sortByChanges) {
+    const byChanges = nodeChangeQuantity(a) - nodeChangeQuantity(b);
+    if (byChanges !== 0) {
+      return byChanges;
+    }
+  } else if (sortByStatus && a.kind === 'file' && b.kind === 'file') {
     const byStatus = statusSortRank(a.status) - statusSortRank(b.status);
     if (byStatus !== 0) {
       return byStatus;
@@ -161,36 +194,48 @@ function compareNodes(
 function aggregateCounts(children: ChangeNode[]): {
   reviewedCount: number;
   totalFiles: number;
+  additions: number;
+  deletions: number;
 } {
   let reviewedCount = 0;
   let totalFiles = 0;
+  let additions = 0;
+  let deletions = 0;
   for (const child of children) {
     if (child.kind === 'file') {
       totalFiles += 1;
       if (child.reviewed) {
         reviewedCount += 1;
       }
+      if (!child.binary) {
+        additions += child.additions;
+        deletions += child.deletions;
+      }
     } else {
       totalFiles += child.totalFiles;
       reviewedCount += child.reviewedCount;
+      additions += child.additions;
+      deletions += child.deletions;
     }
   }
-  return { reviewedCount, totalFiles };
+  return { reviewedCount, totalFiles, additions, deletions };
 }
 
 function finalizeFolder(
   folder: FolderBuilder,
   sortReviewedToBottom: boolean,
-  sortByStatus: boolean
+  sortByStatus: boolean,
+  sortByChanges: boolean
 ): ChangeFolderNode {
   const childFolders = [...folder.subfolders.values()].map(sub =>
-    finalizeFolder(sub, sortReviewedToBottom, sortByStatus)
+    finalizeFolder(sub, sortReviewedToBottom, sortByStatus, sortByChanges)
   );
   const children: ChangeNode[] = [...childFolders, ...folder.files];
-  const { reviewedCount, totalFiles } = aggregateCounts(children);
+  const { reviewedCount, totalFiles, additions, deletions } =
+    aggregateCounts(children);
 
   children.sort((a, b) =>
-    compareNodes(a, b, sortReviewedToBottom, sortByStatus)
+    compareNodes(a, b, sortReviewedToBottom, sortByStatus, sortByChanges)
   );
 
   return {
@@ -199,29 +244,32 @@ function finalizeFolder(
     name: folder.name,
     children,
     reviewedCount,
-    totalFiles
+    totalFiles,
+    additions,
+    deletions
   };
 }
 
 export function buildChangeTree(
-  files: ReadonlyArray<{ relativePath: string; status: number }>,
+  files: ReadonlyArray<FileChangeInput>,
   reviewed: ReadonlySet<string>,
   options?: BuildTreeOptions
 ): ChangeFolderNode {
   const sortReviewedToBottom = options?.sortReviewedToBottom ?? true;
   const sortByStatus = options?.sortByStatus ?? false;
+  const sortByChanges = options?.sortByChanges ?? false;
   const root = createRootBuilder();
 
   for (const file of files) {
-    addFileToBuilder(
-      root,
-      file.relativePath,
-      file.status,
-      reviewed.has(file.relativePath)
-    );
+    addFileToBuilder(root, file, reviewed.has(file.relativePath));
   }
 
-  return finalizeFolder(root, sortReviewedToBottom, sortByStatus);
+  return finalizeFolder(
+    root,
+    sortReviewedToBottom,
+    sortByStatus,
+    sortByChanges
+  );
 }
 
 /**
@@ -259,14 +307,17 @@ function filterFolder(
     }
   }
 
-  const { reviewedCount, totalFiles } = aggregateCounts(children);
+  const { reviewedCount, totalFiles, additions, deletions } =
+    aggregateCounts(children);
   return {
     kind: 'folder',
     relativePath: folder.relativePath,
     name: folder.name,
     children,
     reviewedCount,
-    totalFiles
+    totalFiles,
+    additions,
+    deletions
   };
 }
 
@@ -309,12 +360,19 @@ export function flattenChangeFiles(
     }
   }
 
+  const sortByChanges = options?.sortByChanges ?? false;
+
   walk(root);
   files.sort((a, b) => {
     if (sortReviewedToBottom && a.reviewed !== b.reviewed) {
       return a.reviewed ? 1 : -1;
     }
-    if (sortByStatus) {
+    if (sortByChanges) {
+      const byChanges = nodeChangeQuantity(a) - nodeChangeQuantity(b);
+      if (byChanges !== 0) {
+        return byChanges;
+      }
+    } else if (sortByStatus) {
       const byStatus = statusSortRank(a.status) - statusSortRank(b.status);
       if (byStatus !== 0) {
         return byStatus;

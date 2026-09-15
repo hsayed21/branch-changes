@@ -1,5 +1,10 @@
 import * as vscode from 'vscode';
 import { findBaseBranch } from '../git/baseBranch';
+import {
+  FileChangeStats,
+  formatChangeStatsDescription,
+  loadChangeStats
+} from '../git/changeStats';
 import { createChangeResource, diffUrisForChange } from '../git/changeResources';
 import {
   getGitApi,
@@ -13,6 +18,7 @@ import {
   buildChangeTree,
   ChangeFolderNode,
   ChangeNode,
+  FileChangeInput,
   filterChangeTree,
   flattenChangeFiles,
   formatListPathLabel,
@@ -30,6 +36,7 @@ const REVIEW_FILTER_KEY = 'branchChanges.reviewFilter';
 
 interface FileRuntime {
   readonly gitChange: GitChange;
+  readonly stats: FileChangeStats;
 }
 
 interface RepositoryStateWithEvents {
@@ -95,7 +102,8 @@ export class BranchChangesTreeProvider
       vscode.workspace.onDidChangeConfiguration(event => {
         if (
           event.affectsConfiguration('branchChanges.sortReviewedToBottom') ||
-          event.affectsConfiguration('branchChanges.sortByStatus')
+          event.affectsConfiguration('branchChanges.sortByStatus') ||
+          event.affectsConfiguration('branchChanges.sortByChanges')
         ) {
           void this.refresh(undefined, { allowPick: false });
         }
@@ -300,7 +308,18 @@ export class BranchChangesTreeProvider
       }
 
       const changes = await repository.diffBetween(mergeBase, headRef);
-      const files: Array<{ relativePath: string; status: number }> = [];
+      let changeStats = new Map<string, FileChangeStats>();
+      try {
+        changeStats = await loadChangeStats(
+          repository.rootUri.fsPath,
+          mergeBase,
+          headRef
+        );
+      } catch {
+        // Counts are best-effort; the tree still works without them.
+      }
+
+      const files: FileChangeInput[] = [];
       const activeHashes = new Map<string, string>();
 
       this.fileRuntime.clear();
@@ -311,8 +330,19 @@ export class BranchChangesTreeProvider
         );
         const contentHash = await hashChangeAtHead(git, change, headRef);
         activeHashes.set(relativePath, contentHash);
-        files.push({ relativePath, status: change.status });
-        this.fileRuntime.set(relativePath, { gitChange: change });
+        const stats = changeStats.get(relativePath) ?? {
+          additions: 0,
+          deletions: 0,
+          binary: false
+        };
+        files.push({
+          relativePath,
+          status: change.status,
+          additions: stats.additions,
+          deletions: stats.deletions,
+          binary: stats.binary
+        });
+        this.fileRuntime.set(relativePath, { gitChange: change, stats });
       }
 
       const reviewStateKey = `${repository.rootUri.toString()}:${head.name}`;
@@ -327,8 +357,7 @@ export class BranchChangesTreeProvider
 
       await this.reviewState!.reconcile(activeHashes);
       this.root = buildChangeTree(files, this.reviewState!.getReviewedPaths(), {
-        sortReviewedToBottom: this.sortReviewedToBottom(),
-        sortByStatus: this.sortByStatus()
+        ...this.sortOptions()
       });
       this.decorations.setReviewedPaths(this.reviewState!.getReviewedPaths());
 
@@ -466,8 +495,7 @@ export class BranchChangesTreeProvider
       }
       return flattenChangeFiles(this.root!, {
         filter: this.reviewFilter,
-        sortReviewedToBottom: this.sortReviewedToBottom(),
-        sortByStatus: this.sortByStatus()
+        ...this.sortOptions()
       });
     }
     if (!element) {
@@ -530,9 +558,15 @@ export class BranchChangesTreeProvider
     item.contextValue = file.reviewed
       ? 'branchChangeFile:reviewed'
       : 'branchChangeFile:unreviewed';
-    item.description = statusLetter(file.status);
+    item.description = formatChangeStatsDescription(statusLetter(file.status), {
+      additions: file.additions,
+      deletions: file.deletions,
+      binary: file.binary
+    });
     item.iconPath = statusThemeIcon(file.status);
-    item.tooltip = `${file.relativePath} (${statusLabel(file.status)})`;
+    item.tooltip = file.binary
+      ? `${file.relativePath} (${statusLabel(file.status)}, binary)`
+      : `${file.relativePath} (${statusLabel(file.status)}, ${file.additions + file.deletions} (+${file.additions} −${file.deletions}))`;
 
     const command = this.openDiffCommand(file);
     if (command) {
@@ -559,6 +593,24 @@ export class BranchChangesTreeProvider
     return vscode.workspace
       .getConfiguration('branchChanges')
       .get<boolean>('sortByStatus', false);
+  }
+
+  private sortByChanges(): boolean {
+    return vscode.workspace
+      .getConfiguration('branchChanges')
+      .get<boolean>('sortByChanges', false);
+  }
+
+  private sortOptions(): {
+    sortReviewedToBottom: boolean;
+    sortByStatus: boolean;
+    sortByChanges: boolean;
+  } {
+    return {
+      sortReviewedToBottom: this.sortReviewedToBottom(),
+      sortByStatus: this.sortByStatus(),
+      sortByChanges: this.sortByChanges()
+    };
   }
 
   private openNextOnReviewed(): boolean {
@@ -610,8 +662,7 @@ export class BranchChangesTreeProvider
         continue;
       }
       const file = flattenChangeFiles(this.root, {
-        sortReviewedToBottom: this.sortReviewedToBottom(),
-        sortByStatus: this.sortByStatus()
+        ...this.sortOptions()
       }).find(entry => entry.relativePath === relativePath);
       if (file) {
         return file;
@@ -653,13 +704,18 @@ export class BranchChangesTreeProvider
     if (!this.reviewState) {
       return;
     }
-    const files: Array<{ relativePath: string; status: number }> = [];
+    const files: FileChangeInput[] = [];
     for (const [relativePath, runtime] of this.fileRuntime) {
-      files.push({ relativePath, status: runtime.gitChange.status });
+      files.push({
+        relativePath,
+        status: runtime.gitChange.status,
+        additions: runtime.stats.additions,
+        deletions: runtime.stats.deletions,
+        binary: runtime.stats.binary
+      });
     }
     this.root = buildChangeTree(files, this.reviewState.getReviewedPaths(), {
-      sortReviewedToBottom: this.sortReviewedToBottom(),
-      sortByStatus: this.sortByStatus()
+      ...this.sortOptions()
     });
     this.decorations.setReviewedPaths(this.reviewState.getReviewedPaths());
   }
@@ -702,8 +758,7 @@ export class BranchChangesTreeProvider
     }
     const unreviewed = flattenChangeFiles(this.root, {
       filter: 'unreviewed',
-      sortReviewedToBottom: this.sortReviewedToBottom(),
-      sortByStatus: this.sortByStatus()
+      ...this.sortOptions()
     });
     if (unreviewed.length === 0) {
       return undefined;
@@ -743,8 +798,7 @@ export class BranchChangesTreeProvider
       return;
     }
     const file = flattenChangeFiles(this.root, {
-      sortReviewedToBottom: this.sortReviewedToBottom(),
-      sortByStatus: this.sortByStatus()
+      ...this.sortOptions()
     }).find(entry => entry.relativePath === relativePath);
     if (!file) {
       return;
