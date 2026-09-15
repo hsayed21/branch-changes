@@ -16,7 +16,12 @@ import {
   GitStatus,
   repositoryDisplayName
 } from '../git/gitApi';
-import { pickRepository, selectRepository } from '../git/repositorySelection';
+import {
+  activateGitSourceControl,
+  pickRepository,
+  SELECTED_REPO_KEY,
+  selectRepository
+} from '../git/repositorySelection';
 import {
   buildChangeTree,
   ChangeFolderNode,
@@ -36,7 +41,6 @@ import { ReviewDecorationProvider, toBranchChangesUri } from './reviewDecoration
 
 const VIEW_MODE_KEY = 'branchChanges.viewMode';
 const REVIEW_FILTER_KEY = 'branchChanges.reviewFilter';
-const SELECTED_REPO_KEY = 'branchChanges.selectedRepository';
 
 interface FileRuntime {
   readonly gitChange: GitChange;
@@ -339,7 +343,7 @@ export class BranchChangesTreeProvider
     }
 
     if (git.repositories.length === 1) {
-      await this.refresh(git.repositories[0], { allowPick: false });
+      await this.applyRepositorySelection(git.repositories[0]);
       return;
     }
 
@@ -355,11 +359,23 @@ export class BranchChangesTreeProvider
       return;
     }
 
+    await this.applyRepositorySelection(selected);
+  }
+
+  /**
+   * Persist the repo as the Branch Changes / Git source, sync SCM when possible,
+   * and refresh the file list.
+   */
+  private async applyRepositorySelection(
+    repository: GitRepository
+  ): Promise<void> {
     await this.context.workspaceState.update(
       SELECTED_REPO_KEY,
-      selected.rootUri.toString()
+      repository.rootUri.toString()
     );
-    await this.refresh(selected, { allowPick: false });
+    this.repository = repository;
+    await activateGitSourceControl(repository);
+    await this.refresh(repository, { allowPick: false });
   }
 
   async refresh(
@@ -378,7 +394,11 @@ export class BranchChangesTreeProvider
         git.repositories.find(entry => entry.ui.selected) ??
         this.repository;
       if (!repository && allowPick) {
-        repository = await selectRepository(git);
+        repository = await selectRepository(git, undefined, {
+          savedRepositoryUri: this.context.workspaceState.get<string>(
+            SELECTED_REPO_KEY
+          )
+        });
       }
       if (!repository) {
         this.resetSnapshot();
@@ -1117,11 +1137,15 @@ export class BranchChangesTreeProvider
         if (!repository.ui.selected) {
           return;
         }
-        // Keep an explicit Branch Changes repo selection sticky.
-        if (this.repository) {
+        // Follow the Git SCM selected source: save, then refresh the file list.
+        if (
+          this.repository?.rootUri.toString() === repository.rootUri.toString()
+        ) {
           return;
         }
-        this.scheduleRefresh();
+        void this.context.workspaceState
+          .update(SELECTED_REPO_KEY, repository.rootUri.toString())
+          .then(() => this.refresh(repository, { allowPick: false }));
       })
     );
   }

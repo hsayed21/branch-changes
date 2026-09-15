@@ -27,6 +27,7 @@
     "onCommand:branchChanges.markUnreviewed",
     "onCommand:branchChanges.nextUnreviewed",
     "onCommand:branchChanges.previousUnreviewed",
+    "onCommand:branchChanges.selectRepository",
     "onView:branchChanges.files"
   ],
   "main": "./out/extension.js",

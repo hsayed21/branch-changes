@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { findBaseBranch, pickAndSaveBaseBranch } from './git/baseBranch';
 import { createChangeResource } from './git/changeResources';
 import { getGitApi, repositoryDisplayName } from './git/gitApi';
-import { pickRepository, selectRepository } from './git/repositorySelection';
+import { pickRepository, SELECTED_REPO_KEY, selectRepository } from './git/repositorySelection';
 import { ChangeNode } from './model/changeTreeModel';
 import { BranchChangesTreeProvider } from './view/branchChangesTree';
 import { ReviewDecorationProvider } from './view/reviewDecorations';
@@ -66,7 +66,9 @@ async function showBranchChanges(
   sourceControl?: unknown
 ): Promise<void> {
   const git = await getGitApi();
-  const repository = await selectRepository(git, sourceControl);
+  const repository = await selectRepository(git, sourceControl, {
+    savedRepositoryUri: context.workspaceState.get<string>(SELECTED_REPO_KEY)
+  });
   if (!repository) {
     return;
   }
