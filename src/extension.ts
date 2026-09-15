@@ -30,6 +30,10 @@ export function activate(context: vscode.ExtensionContext): void {
       runCommand(() => provider.openAllDiffs())),
     vscode.commands.registerCommand('branchChanges.filter', () =>
       runCommand(() => provider.pickReviewFilter())),
+    vscode.commands.registerCommand('branchChanges.searchFiles', () =>
+      runCommand(() => provider.pickAndOpenFile())),
+    vscode.commands.registerCommand('branchChanges.clearPathSearch', () =>
+      runCommand(() => provider.clearPathSearch())),
     vscode.commands.registerCommand('branchChanges.viewAsList', () =>
       runCommand(() => provider.setViewMode('list'))),
     vscode.commands.registerCommand('branchChanges.viewAsTree', () =>

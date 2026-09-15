@@ -92,6 +92,18 @@
         "icon": "$(filter)"
       },
       {
+        "command": "branchChanges.searchFiles",
+        "title": "Search Files...",
+        "category": "Branch Changes",
+        "icon": "$(search)"
+      },
+      {
+        "command": "branchChanges.clearPathSearch",
+        "title": "Clear Search",
+        "category": "Branch Changes",
+        "icon": "$(close)"
+      },
+      {
         "command": "branchChanges.viewAsList",
         "title": "View as List",
         "category": "Branch Changes",
@@ -151,6 +163,16 @@
           "command": "branchChanges.filter",
           "when": "view == branchChanges.files",
           "group": "navigation@3"
+        },
+        {
+          "command": "branchChanges.searchFiles",
+          "when": "view == branchChanges.files",
+          "group": "navigation@3.5"
+        },
+        {
+          "command": "branchChanges.clearPathSearch",
+          "when": "view == branchChanges.files && branchChanges.pathSearchActive",
+          "group": "navigation@3.6"
         },
         {
           "command": "branchChanges.openAllDiffs",
@@ -216,6 +238,12 @@
         "key": "ctrl+alt+p",
         "mac": "cmd+alt+p",
         "when": "branchChanges.activeChange || focusedView == 'branchChanges.files'"
+      },
+      {
+        "command": "branchChanges.searchFiles",
+        "key": "ctrl+alt+f",
+        "mac": "cmd+alt+f",
+        "when": "focusedView == 'branchChanges.files' || branchChanges.activeChange"
       }
     ],
     "colors": [

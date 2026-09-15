@@ -56,6 +56,8 @@ export class BranchChangesTreeProvider
 
   private reviewFilter: ReviewFilter;
   private viewMode: ViewMode;
+  private pathQuery = '';
+  private pathSearchBox: vscode.InputBox | undefined;
   private root: ChangeFolderNode | undefined;
   private reviewState: ReviewState | undefined;
   private reviewStateKey: string | undefined;
@@ -95,6 +97,7 @@ export class BranchChangesTreeProvider
       'Branch Changes: path segments shown in list view (click to change)';
     void this.syncViewModeContext();
     void this.syncReviewFilterContext();
+    void this.syncPathSearchContext();
     // Promote legacy workspace prefs into globalState without waiting on activate.
     void migrateUiPrefs(context, this.viewMode, this.reviewFilter);
     this.disposables.push(
@@ -195,6 +198,67 @@ export class BranchChangesTreeProvider
     });
     if (selected) {
       await this.setReviewFilter(selected.filter);
+    }
+  }
+
+  async pickAndOpenFile(): Promise<void> {
+    if (this.pathSearchBox) {
+      this.pathSearchBox.show();
+      return;
+    }
+
+    if (!this.root) {
+      await this.refresh(undefined, { allowPick: false });
+    }
+
+    const box = vscode.window.createInputBox();
+    this.pathSearchBox = box;
+    box.title = 'Search Branch Changes';
+    box.placeholder = 'Type to filter files (e.g. customer)';
+    box.value = this.pathQuery;
+    box.ignoreFocusOut = true;
+    box.buttons = [
+      {
+        iconPath: new vscode.ThemeIcon('clear-all'),
+        tooltip: 'Clear search'
+      }
+    ];
+
+    const updateFromValue = (value: string): void => {
+      this.setPathQuery(value);
+      const visible = this.getDisplayRoot();
+      const count = visible?.totalFiles ?? 0;
+      box.prompt =
+        value.trim().length === 0
+          ? 'Showing all files'
+          : `${count} file${count === 1 ? '' : 's'} match "${value.trim()}"`;
+    };
+
+    box.onDidChangeValue(updateFromValue);
+    box.onDidAccept(() => {
+      box.hide();
+      this.disposePathSearchBox();
+    });
+    box.onDidHide(() => {
+      this.disposePathSearchBox();
+    });
+    box.onDidTriggerButton(() => {
+      box.value = '';
+      updateFromValue('');
+      box.hide();
+      this.disposePathSearchBox();
+    });
+
+    box.show();
+    updateFromValue(box.value);
+  }
+
+  async clearPathSearch(): Promise<void> {
+    this.setPathQuery('');
+    if (this.pathSearchBox) {
+      this.pathSearchBox.value = '';
+      this.pathSearchBox.hide();
+      this.disposePathSearchBox();
     }
   }
 
@@ -495,6 +559,7 @@ export class BranchChangesTreeProvider
       }
       return flattenChangeFiles(this.root!, {
         filter: this.reviewFilter,
+        pathQuery: this.pathQuery,
         ...this.sortOptions()
       });
     }
@@ -522,6 +587,7 @@ export class BranchChangesTreeProvider
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
+    this.disposePathSearchBox();
     this.repositorySubscription?.dispose();
     for (const disposable of this.uiSubscriptions.values()) {
       disposable.dispose();
@@ -536,7 +602,7 @@ export class BranchChangesTreeProvider
   private folderTreeItem(folder: ChangeFolderNode): vscode.TreeItem {
     const item = new vscode.TreeItem(
       folder.name,
-      shouldExpandFolder(folder, this.reviewFilter)
+      shouldExpandFolder(folder, this.reviewFilter, this.pathQuery)
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed
     );
@@ -580,7 +646,39 @@ export class BranchChangesTreeProvider
     if (!this.root) {
       return undefined;
     }
-    return filterChangeTree(this.root, this.reviewFilter);
+    return filterChangeTree(this.root, this.reviewFilter, this.pathQuery);
+  }
+
+  private setPathQuery(value: string): void {
+    if (this.pathQuery === value) {
+      this.updatePathSearchDescription();
+      return;
+    }
+    this.pathQuery = value;
+    void this.syncPathSearchContext();
+    this.updatePathSearchDescription();
+    this.notifyTreeIfVisible();
+  }
+
+  private disposePathSearchBox(): void {
+    this.pathSearchBox?.dispose();
+    this.pathSearchBox = undefined;
+  }
+
+  private updatePathSearchDescription(): void {
+    if (!this.treeView) {
+      return;
+    }
+    const trimmed = this.pathQuery.trim();
+    this.treeView.description = trimmed ? `Search: ${trimmed}` : undefined;
+  }
+
+  private async syncPathSearchContext(): Promise<void> {
+    await vscode.commands.executeCommand(
+      'setContext',
+      'branchChanges.pathSearchActive',
+      this.pathQuery.trim().length > 0
+    );
   }
 
   private sortReviewedToBottom(): boolean {

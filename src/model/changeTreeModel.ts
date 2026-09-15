@@ -278,29 +278,37 @@ export function buildChangeTree(
  */
 export function filterChangeTree(
   root: ChangeFolderNode,
-  filter: ReviewFilter
+  filter: ReviewFilter,
+  pathQuery?: string
 ): ChangeFolderNode {
-  if (filter === 'all') {
+  const trimmed = pathQuery?.trim() ?? '';
+  if (filter === 'all' && !trimmed) {
     return root;
   }
-  return filterFolder(root, filter);
+  return filterFolder(root, filter, trimmed.toLowerCase());
+}
+
+function pathMatches(relativePath: string, pathQueryLower: string): boolean {
+  return !pathQueryLower || relativePath.toLowerCase().includes(pathQueryLower);
 }
 
 function filterFolder(
   folder: ChangeFolderNode,
-  filter: Exclude<ReviewFilter, 'all'>
+  filter: ReviewFilter,
+  pathQueryLower: string
 ): ChangeFolderNode {
   const children: ChangeNode[] = [];
 
   for (const child of folder.children) {
     if (child.kind === 'file') {
-      const keep =
-        filter === 'unreviewed' ? !child.reviewed : child.reviewed;
-      if (keep) {
+      const reviewOk =
+        filter === 'all' ||
+        (filter === 'unreviewed' ? !child.reviewed : child.reviewed);
+      if (reviewOk && pathMatches(child.relativePath, pathQueryLower)) {
         children.push(child);
       }
     } else {
-      const filtered = filterFolder(child, filter);
+      const filtered = filterFolder(child, filter, pathQueryLower);
       if (filtered.children.length > 0) {
         children.push(filtered);
       }
@@ -323,12 +331,13 @@ function filterFolder(
 
 export function shouldExpandFolder(
   folder: ChangeFolderNode,
-  filter: ReviewFilter
+  filter: ReviewFilter,
+  pathQuery?: string
 ): boolean {
   if (folder.children.length === 0) {
     return false;
   }
-  if (filter !== 'all') {
+  if (filter !== 'all' || (pathQuery?.trim() ?? '').length > 0) {
     return true;
   }
   return folder.reviewedCount < folder.totalFiles;
@@ -337,20 +346,20 @@ export function shouldExpandFolder(
 /** Flatten the change tree into a sorted list of files (for list view mode). */
 export function flattenChangeFiles(
   root: ChangeFolderNode,
-  options?: BuildTreeOptions & { filter?: ReviewFilter }
+  options?: BuildTreeOptions & { filter?: ReviewFilter; pathQuery?: string }
 ): ChangeFileNode[] {
   const filter = options?.filter ?? 'all';
+  const pathQueryLower = (options?.pathQuery?.trim() ?? '').toLowerCase();
   const sortReviewedToBottom = options?.sortReviewedToBottom ?? true;
   const sortByStatus = options?.sortByStatus ?? false;
   const files: ChangeFileNode[] = [];
 
   function walk(node: ChangeNode): void {
     if (node.kind === 'file') {
-      if (filter === 'all') {
-        files.push(node);
-      } else if (filter === 'unreviewed' && !node.reviewed) {
-        files.push(node);
-      } else if (filter === 'reviewed' && node.reviewed) {
+      const reviewOk =
+        filter === 'all' ||
+        (filter === 'unreviewed' ? !node.reviewed : node.reviewed);
+      if (reviewOk && pathMatches(node.relativePath, pathQueryLower)) {
         files.push(node);
       }
       return;
