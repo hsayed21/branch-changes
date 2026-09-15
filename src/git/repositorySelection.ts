@@ -34,22 +34,29 @@ export async function selectRepository(
 
 export async function pickRepository(
   repositories: readonly GitRepository[],
-  placeHolder = 'Select a Git repository'
+  placeHolder = 'Select a Git repository',
+  currentUri?: string
 ): Promise<GitRepository | undefined> {
   if (repositories.length === 0) {
     throw new Error('No Git repository is open.');
   }
 
-  const items = repositories.map<RepositoryQuickPickItem>(repository => ({
-    label: repositoryDisplayName(repository),
-    description: repository.state.HEAD?.name ?? 'No branch checked out',
-    detail: repository.rootUri.fsPath,
-    repository
-  }));
+  const items = repositories.map<RepositoryQuickPickItem>(repository => {
+    const isCurrent = currentUri === repository.rootUri.toString();
+    return {
+      label: repositoryDisplayName(repository),
+      description: repository.state.HEAD?.name ?? 'No branch checked out',
+      detail: repository.rootUri.fsPath,
+      repository,
+      picked: isCurrent,
+      iconPath: isCurrent ? new vscode.ThemeIcon('check') : new vscode.ThemeIcon('repo')
+    };
+  });
   return (await vscode.window.showQuickPick(items, {
     placeHolder,
     matchOnDescription: true,
-    matchOnDetail: true
+    matchOnDetail: true,
+    title: 'Branch Changes repository'
   }))?.repository;
 }
 

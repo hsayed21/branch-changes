@@ -40,6 +40,8 @@ export function activate(context: vscode.ExtensionContext): void {
       runCommand(() => provider.setViewMode('tree'))),
     vscode.commands.registerCommand('branchChanges.setListPathParts', () =>
       runCommand(() => provider.pickListPathParts())),
+    vscode.commands.registerCommand('branchChanges.selectRepository', () =>
+      runCommand(() => provider.pickRepository())),
     vscode.commands.registerCommand('branchChanges.markReviewed', (node?: ChangeNode) =>
       runCommand(() => provider.toggleReviewed(node))),
     vscode.commands.registerCommand('branchChanges.markUnreviewed', (node?: ChangeNode) =>

@@ -11,7 +11,8 @@ Changes editor—without requiring a pull request or GitLens Pro.
 
 1. Open **Source Control**.
 2. Expand the **Branch Changes** tree view to browse committed changes on the
-   current branch.
+   current branch. In a multi-root workspace, use the **repo** button in the
+   view title to pick which repository to list.
 3. Click a file to open a single-file diff (merge-base ↔ HEAD).
 4. Click **Show Branch Changes** on the Git repository title row to open all
    diffs in VS Code's native Changes editor at once.

@@ -13,9 +13,10 @@ import {
   GitApi,
   GitChange,
   GitRepository,
-  GitStatus
+  GitStatus,
+  repositoryDisplayName
 } from '../git/gitApi';
-import { selectRepository } from '../git/repositorySelection';
+import { pickRepository, selectRepository } from '../git/repositorySelection';
 import {
   buildChangeTree,
   ChangeFolderNode,
@@ -35,6 +36,7 @@ import { ReviewDecorationProvider, toBranchChangesUri } from './reviewDecoration
 
 const VIEW_MODE_KEY = 'branchChanges.viewMode';
 const REVIEW_FILTER_KEY = 'branchChanges.reviewFilter';
+const SELECTED_REPO_KEY = 'branchChanges.selectedRepository';
 
 interface FileRuntime {
   readonly gitChange: GitChange;
@@ -323,6 +325,43 @@ export class BranchChangesTreeProvider
       .update('listPathParts', value, vscode.ConfigurationTarget.Global);
   }
 
+  /** Quick-pick a repository when the workspace has more than one. */
+  async pickRepository(): Promise<void> {
+    const git = await getGitApi();
+    this.watchGitApi(git);
+    await this.syncMultiRepoContext(git);
+
+    if (git.repositories.length === 0) {
+      void vscode.window.showInformationMessage(
+        'Branch Changes: No Git repository is open.'
+      );
+      return;
+    }
+
+    if (git.repositories.length === 1) {
+      await this.refresh(git.repositories[0], { allowPick: false });
+      return;
+    }
+
+    const currentUri = this.repository?.rootUri.toString();
+    const selected = await pickRepository(
+      git.repositories,
+      currentUri
+        ? `Select repository (current: ${repositoryDisplayName(this.repository!)})`
+        : 'Select a Git repository',
+      currentUri
+    );
+    if (!selected) {
+      return;
+    }
+
+    await this.context.workspaceState.update(
+      SELECTED_REPO_KEY,
+      selected.rootUri.toString()
+    );
+    await this.refresh(selected, { allowPick: false });
+  }
+
   async refresh(
     preferredRepository?: GitRepository,
     options?: { allowPick?: boolean }
@@ -331,8 +370,11 @@ export class BranchChangesTreeProvider
     try {
       const git = await getGitApi();
       this.watchGitApi(git);
+      await this.syncMultiRepoContext(git);
+
       let repository =
         preferredRepository ??
+        this.resolveStickyRepository(git) ??
         git.repositories.find(entry => entry.ui.selected) ??
         this.repository;
       if (!repository && allowPick) {
@@ -341,16 +383,23 @@ export class BranchChangesTreeProvider
       if (!repository) {
         this.resetSnapshot();
         this.setMessage('No Git repository selected.');
+        this.updateTreeDescription(git);
         this.changeEmitter.fire();
         await this.syncActiveChangeContext();
         return;
       }
 
+      this.repository = repository;
+      await this.context.workspaceState.update(
+        SELECTED_REPO_KEY,
+        repository.rootUri.toString()
+      );
       this.bindRepository(repository);
+      this.updateTreeDescription(git);
 
       const head = repository.state.HEAD;
       if (!head?.name) {
-        this.resetSnapshot();
+        this.resetChangeData();
         this.setMessage('Check out a branch to see branch changes.');
         this.changeEmitter.fire();
         await this.syncActiveChangeContext();
@@ -359,7 +408,7 @@ export class BranchChangesTreeProvider
 
       const base = await findBaseBranch(this.context, repository, head);
       if (!base) {
-        this.resetSnapshot();
+        this.resetChangeData();
         this.setMessage('Set a base branch to see branch changes.');
         this.changeEmitter.fire();
         await this.syncActiveChangeContext();
@@ -369,7 +418,7 @@ export class BranchChangesTreeProvider
       const headRef = head.commit ?? 'HEAD';
       const mergeBase = await repository.getMergeBase(base.ref, headRef);
       if (!mergeBase) {
-        this.resetSnapshot();
+        this.resetChangeData();
         this.setMessage(
           `No common ancestor was found between ${base.ref} and ${head.name}.`
         );
@@ -1037,6 +1086,7 @@ export class BranchChangesTreeProvider
     this.disposables.push(
       git.onDidOpenRepository(repository => {
         this.bindRepositoryUi(repository);
+        void this.syncMultiRepoContext(git);
         this.scheduleRefresh();
       }),
       git.onDidCloseRepository(repository => {
@@ -1046,6 +1096,10 @@ export class BranchChangesTreeProvider
           this.repositorySubscription?.dispose();
           this.repositorySubscription = undefined;
         }
+        if (this.repository === repository) {
+          this.repository = undefined;
+        }
+        void this.syncMultiRepoContext(git);
         this.scheduleRefresh();
       })
     );
@@ -1063,10 +1117,8 @@ export class BranchChangesTreeProvider
         if (!repository.ui.selected) {
           return;
         }
-        if (
-          this.repository &&
-          this.repository.rootUri.toString() === repository.rootUri.toString()
-        ) {
+        // Keep an explicit Branch Changes repo selection sticky.
+        if (this.repository) {
           return;
         }
         this.scheduleRefresh();
@@ -1104,16 +1156,61 @@ export class BranchChangesTreeProvider
     }, 300);
   }
 
-  private resetSnapshot(): void {
+  /** Prefer the current / last-picked repo while it is still open. */
+  private resolveStickyRepository(
+    git: GitApi
+  ): GitRepository | undefined {
+    if (this.repository) {
+      const stillOpen = git.repositories.find(
+        entry =>
+          entry.rootUri.toString() === this.repository!.rootUri.toString()
+      );
+      if (stillOpen) {
+        return stillOpen;
+      }
+    }
+
+    const saved = this.context.workspaceState.get<string>(SELECTED_REPO_KEY);
+    if (!saved) {
+      return undefined;
+    }
+    return git.repositories.find(entry => entry.rootUri.toString() === saved);
+  }
+
+  private async syncMultiRepoContext(git: GitApi): Promise<void> {
+    await vscode.commands.executeCommand(
+      'setContext',
+      'branchChanges.multiRepo',
+      git.repositories.length > 1
+    );
+  }
+
+  private updateTreeDescription(git: GitApi): void {
+    if (!this.treeView) {
+      return;
+    }
+    if (git.repositories.length > 1 && this.repository) {
+      this.treeView.description = repositoryDisplayName(this.repository);
+      return;
+    }
+    this.treeView.description = undefined;
+  }
+
+  /** Clear file list state but keep the selected repository. */
+  private resetChangeData(): void {
     this.root = undefined;
     this.fileRuntime.clear();
-    this.git = undefined;
-    this.repository = undefined;
     this.mergeBase = undefined;
     this.headRef = undefined;
     this.baseRef = undefined;
     this.headName = undefined;
     this.changes = undefined;
+  }
+
+  private resetSnapshot(): void {
+    this.resetChangeData();
+    this.git = undefined;
+    this.repository = undefined;
   }
 
   private setMessage(message: string): void {

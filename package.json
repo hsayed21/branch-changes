@@ -119,6 +119,12 @@
         "command": "branchChanges.setListPathParts",
         "title": "Set List Path Parts...",
         "category": "Branch Changes"
+      },
+      {
+        "command": "branchChanges.selectRepository",
+        "title": "Select Repository...",
+        "category": "Branch Changes",
+        "icon": "$(repo)"
       }
     ],
     "views": {
@@ -144,6 +150,11 @@
         }
       ],
       "view/title": [
+        {
+          "command": "branchChanges.selectRepository",
+          "when": "view == branchChanges.files && branchChanges.multiRepo",
+          "group": "navigation@0"
+        },
         {
           "command": "branchChanges.refresh",
           "when": "view == branchChanges.files",
