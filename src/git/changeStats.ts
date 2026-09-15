@@ -4,9 +4,21 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 export type FileChangeStats = {
+  /** Raw git numstat additions (for display). */
   additions: number;
+  /** Raw git numstat deletions (for display). */
   deletions: number;
   binary: boolean;
+  /**
+   * Line-multiset additions used for Sort by Changes.
+   * Ignores identical lines that only moved; falls back to `additions` when unset.
+   */
+  contentAdditions?: number;
+  /**
+   * Line-multiset deletions used for Sort by Changes.
+   * Ignores identical lines that only moved; falls back to `deletions` when unset.
+   */
+  contentDeletions?: number;
 };
 
 /**
@@ -68,12 +80,32 @@ export function changeQuantity(stats: FileChangeStats | undefined): number {
     // Push binary / unknown files after numeric counts when sorting ascending.
     return Number.MAX_SAFE_INTEGER;
   }
-  return stats.additions + stats.deletions;
+  const additions = stats.contentAdditions ?? stats.additions;
+  const deletions = stats.contentDeletions ?? stats.deletions;
+  return additions + deletions;
+}
+
+/**
+ * Counts shown in the tree badge / tooltip.
+ * When `includeMovedLineChanges` is false, identical moved lines are excluded.
+ */
+export function displayChangeCounts(
+  stats: FileChangeStats,
+  includeMovedLineChanges: boolean
+): { additions: number; deletions: number } {
+  if (!includeMovedLineChanges) {
+    return {
+      additions: stats.contentAdditions ?? stats.additions,
+      deletions: stats.contentDeletions ?? stats.deletions
+    };
+  }
+  return { additions: stats.additions, deletions: stats.deletions };
 }
 
 export function formatChangeStatsDescription(
   statusLetter: string,
-  stats: FileChangeStats | undefined
+  stats: FileChangeStats | undefined,
+  includeMovedLineChanges = true
 ): string {
   if (!stats) {
     return statusLetter;
@@ -81,8 +113,12 @@ export function formatChangeStatsDescription(
   if (stats.binary) {
     return `${statusLetter}  —`;
   }
-  const total = stats.additions + stats.deletions;
-  return `${statusLetter}  ${total} (+${stats.additions} −${stats.deletions})`;
+  const { additions, deletions } = displayChangeCounts(
+    stats,
+    includeMovedLineChanges
+  );
+  const total = additions + deletions;
+  return `${statusLetter}  ${total} (+${additions} −${deletions})`;
 }
 
 /** Resolve the destination path from a numstat path field (handles renames). */

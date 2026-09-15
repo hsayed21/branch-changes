@@ -293,7 +293,12 @@
         "branchChanges.sortByChanges": {
           "type": "boolean",
           "default": false,
-          "description": "When enabled, sort files by change quantity (fewest line changes first) in both tree and list views. Takes precedence over Sort by Status. Reviewed-to-bottom still applies when that setting is on."
+          "description": "When enabled, sort files by effective content churn (fewest first), ignoring identical lines that only moved or were reordered. Takes precedence over Sort by Status. Reviewed-to-bottom still applies when that setting is on."
+        },
+        "branchChanges.showMovedLineChanges": {
+          "type": "boolean",
+          "default": true,
+          "description": "When enabled, file change counts (+N −M) include identical lines that only moved or were reordered. When disabled, counts show unique content changes only (moved lines excluded)."
         },
         "branchChanges.openNextOnReviewed": {
           "type": "boolean",
@@ -313,7 +318,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "typecheck": "tsc --noEmit -p ./",
-    "test": "npm run compile && node --test out/review/reviewState.test.js out/model/changeTreeModel.test.js",
+    "test": "npm run compile && node --test out/git/contentChurn.test.js out/git/changeStats.test.js out/model/changeTreeModel.test.js",
     "watch": "tsc --watch -p ./"
   },
   "devDependencies": {

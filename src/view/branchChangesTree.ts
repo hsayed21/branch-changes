@@ -2,10 +2,12 @@ import * as vscode from 'vscode';
 import { findBaseBranch } from '../git/baseBranch';
 import {
   FileChangeStats,
+  displayChangeCounts,
   formatChangeStatsDescription,
   loadChangeStats
 } from '../git/changeStats';
 import { createChangeResource, diffUrisForChange } from '../git/changeResources';
+import { lineContentChurn } from '../git/contentChurn';
 import {
   getGitApi,
   GitApi,
@@ -110,8 +112,13 @@ export class BranchChangesTreeProvider
         ) {
           void this.refresh(undefined, { allowPick: false });
         }
-        if (event.affectsConfiguration('branchChanges.listPathParts')) {
+        if (
+          event.affectsConfiguration('branchChanges.listPathParts')
+        ) {
           this.updateListPathPartsStatusBar();
+          this.notifyTreeIfVisible();
+        }
+        if (event.affectsConfiguration('branchChanges.showMovedLineChanges')) {
           this.notifyTreeIfVisible();
         }
       }),
@@ -394,16 +401,25 @@ export class BranchChangesTreeProvider
         );
         const contentHash = await hashChangeAtHead(git, change, headRef);
         activeHashes.set(relativePath, contentHash);
-        const stats = changeStats.get(relativePath) ?? {
+        const baseStats = changeStats.get(relativePath) ?? {
           additions: 0,
           deletions: 0,
           binary: false
         };
+        const stats = await withContentChurn(
+          git,
+          change,
+          mergeBase,
+          headRef,
+          baseStats
+        );
         files.push({
           relativePath,
           status: change.status,
           additions: stats.additions,
           deletions: stats.deletions,
+          contentAdditions: stats.contentAdditions,
+          contentDeletions: stats.contentDeletions,
           binary: stats.binary
         });
         this.fileRuntime.set(relativePath, { gitChange: change, stats });
@@ -624,15 +640,29 @@ export class BranchChangesTreeProvider
     item.contextValue = file.reviewed
       ? 'branchChangeFile:reviewed'
       : 'branchChangeFile:unreviewed';
-    item.description = formatChangeStatsDescription(statusLetter(file.status), {
+    const includeMoved = this.showMovedLineChanges();
+    const displayStats = {
       additions: file.additions,
       deletions: file.deletions,
+      contentAdditions: file.contentAdditions,
+      contentDeletions: file.contentDeletions,
       binary: file.binary
-    });
+    };
+    item.description = formatChangeStatsDescription(
+      statusLetter(file.status),
+      displayStats,
+      includeMoved
+    );
     item.iconPath = statusThemeIcon(file.status);
-    item.tooltip = file.binary
-      ? `${file.relativePath} (${statusLabel(file.status)}, binary)`
-      : `${file.relativePath} (${statusLabel(file.status)}, ${file.additions + file.deletions} (+${file.additions} −${file.deletions}))`;
+    if (file.binary) {
+      item.tooltip = `${file.relativePath} (${statusLabel(file.status)}, binary)`;
+    } else {
+      const { additions, deletions } = displayChangeCounts(
+        displayStats,
+        includeMoved
+      );
+      item.tooltip = `${file.relativePath} (${statusLabel(file.status)}, ${additions + deletions} (+${additions} −${deletions}))`;
+    }
 
     const command = this.openDiffCommand(file);
     if (command) {
@@ -697,6 +727,12 @@ export class BranchChangesTreeProvider
     return vscode.workspace
       .getConfiguration('branchChanges')
       .get<boolean>('sortByChanges', false);
+  }
+
+  private showMovedLineChanges(): boolean {
+    return vscode.workspace
+      .getConfiguration('branchChanges')
+      .get<boolean>('showMovedLineChanges', true);
   }
 
   private sortOptions(): {
@@ -809,6 +845,8 @@ export class BranchChangesTreeProvider
         status: runtime.gitChange.status,
         additions: runtime.stats.additions,
         deletions: runtime.stats.deletions,
+        contentAdditions: runtime.stats.contentAdditions,
+        contentDeletions: runtime.stats.contentDeletions,
         binary: runtime.stats.binary
       });
     }
@@ -1249,5 +1287,47 @@ function statusLabel(status: number): string {
       return 'Copied';
     default:
       return 'Modified';
+  }
+}
+
+const textDecoder = new TextDecoder('utf8');
+
+async function withContentChurn(
+  git: GitApi,
+  change: GitChange,
+  mergeBase: string,
+  headRef: string,
+  stats: FileChangeStats
+): Promise<FileChangeStats> {
+  if (stats.binary) {
+    return stats;
+  }
+
+  const { left, right } = diffUrisForChange(git, change, mergeBase, headRef);
+  const before = await readGitText(left);
+  const after = await readGitText(right);
+  if (before === undefined && after === undefined) {
+    return stats;
+  }
+
+  const churn = lineContentChurn(before ?? '', after ?? '');
+  return {
+    ...stats,
+    contentAdditions: churn.additions,
+    contentDeletions: churn.deletions
+  };
+}
+
+async function readGitText(
+  uri: vscode.Uri | undefined
+): Promise<string | undefined> {
+  if (!uri) {
+    return undefined;
+  }
+  try {
+    const bytes = await vscode.workspace.fs.readFile(uri);
+    return textDecoder.decode(bytes);
+  } catch {
+    return undefined;
   }
 }
