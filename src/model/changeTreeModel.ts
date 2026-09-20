@@ -7,9 +7,9 @@ export type ChangeFileNode = {
   reviewed: boolean;
   additions: number;
   deletions: number;
-  /** Multiset additions for Sort by Changes (moved-identical lines ignored). */
+  /** Per-line additions with whitespace ignored (`git diff --ignore-all-space`). */
   contentAdditions: number;
-  /** Multiset deletions for Sort by Changes (moved-identical lines ignored). */
+  /** Per-line deletions with whitespace ignored (`git diff --ignore-all-space`). */
   contentDeletions: number;
   binary: boolean;
 };
@@ -40,8 +40,8 @@ export type BuildTreeOptions = {
   /** When true, group files by change status (A, M, D, …) before sorting by name. */
   sortByStatus?: boolean;
   /**
-   * When true, sort by effective content churn (fewest first), ignoring identical
-   * lines that only moved. Takes precedence over sortByStatus.
+   * When true, sort by ignore-all-space line counts (fewest first).
+   * Takes precedence over sortByStatus.
    */
   sortByChanges?: boolean;
 };
@@ -165,10 +165,7 @@ export function nodeIsFullyReviewed(node: ChangeNode): boolean {
   return node.totalFiles > 0 && node.reviewedCount === node.totalFiles;
 }
 
-/**
- * Sort key for Sort by Changes: effective content churn (moved-identical lines
- * ignored). Binary files sort last.
- */
+/** Sort key for Sort by Changes: ignore-all-space line counts. Binary files sort last. */
 export function nodeChangeQuantity(node: ChangeNode): number {
   if (node.kind === 'file') {
     return node.binary

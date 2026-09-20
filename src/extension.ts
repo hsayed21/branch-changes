@@ -21,13 +21,23 @@ export function activate(context: vscode.ExtensionContext): void {
     treeView,
     vscode.window.registerFileDecorationProvider(decorations),
     vscode.commands.registerCommand('branchChanges.show', (sourceControl?: unknown) =>
-      runCommand(() => showBranchChanges(context, sourceControl))),
+      runCommand(() => showBranchChanges(context, provider, sourceControl))),
     vscode.commands.registerCommand('branchChanges.setBase', () =>
       runCommand(() => setBaseBranch(context, provider))),
     vscode.commands.registerCommand('branchChanges.refresh', () =>
       runCommand(() => provider.refresh())),
     vscode.commands.registerCommand('branchChanges.openAllDiffs', () =>
       runCommand(() => provider.openAllDiffs())),
+    vscode.commands.registerCommand(
+      'branchChanges.openFileDiff',
+      (relativePath?: string, options?: { preview?: boolean }) =>
+        runCommand(async () => {
+          if (typeof relativePath !== 'string' || !relativePath) {
+            return;
+          }
+          await provider.openFileDiff(relativePath, options);
+        })
+    ),
     vscode.commands.registerCommand('branchChanges.filter', () =>
       runCommand(() => provider.pickReviewFilter())),
     vscode.commands.registerCommand('branchChanges.searchFiles', () =>
@@ -42,10 +52,16 @@ export function activate(context: vscode.ExtensionContext): void {
       runCommand(() => provider.pickListPathParts())),
     vscode.commands.registerCommand('branchChanges.selectRepository', () =>
       runCommand(() => provider.pickRepository())),
-    vscode.commands.registerCommand('branchChanges.markReviewed', (node?: ChangeNode) =>
-      runCommand(() => provider.toggleReviewed(node))),
-    vscode.commands.registerCommand('branchChanges.markUnreviewed', (node?: ChangeNode) =>
-      runCommand(() => provider.toggleReviewed(node))),
+    vscode.commands.registerCommand(
+      'branchChanges.markReviewed',
+      (node?: ChangeNode | vscode.Uri | string | readonly vscode.Uri[]) =>
+        runCommand(() => provider.toggleReviewed(node))
+    ),
+    vscode.commands.registerCommand(
+      'branchChanges.markUnreviewed',
+      (node?: ChangeNode | vscode.Uri | string | readonly vscode.Uri[]) =>
+        runCommand(() => provider.toggleReviewed(node))
+    ),
     vscode.commands.registerCommand('branchChanges.nextUnreviewed', () =>
       runCommand(() => provider.openNextUnreviewed())),
     vscode.commands.registerCommand('branchChanges.previousUnreviewed', () =>
@@ -54,7 +70,7 @@ export function activate(context: vscode.ExtensionContext): void {
       runCommand(() => provider.clearMarks()))
   );
 
-  void provider.refresh();
+  void provider.refresh(undefined, { allowPick: false });
 }
 
 export function deactivate(): void {
@@ -63,6 +79,7 @@ export function deactivate(): void {
 
 async function showBranchChanges(
   context: vscode.ExtensionContext,
+  provider: BranchChangesTreeProvider,
   sourceControl?: unknown
 ): Promise<void> {
   const git = await getGitApi();
@@ -103,6 +120,7 @@ async function showBranchChanges(
   const resources = changes.map(change => createChangeResource(git, change, mergeBase, headRef));
   const title = `Changes in ${head.name} from ${base.ref}`;
 
+  await provider.ensureDiffEditorAlgorithm();
   await vscode.commands.executeCommand('vscode.changes', title, resources);
 }
 

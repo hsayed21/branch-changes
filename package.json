@@ -305,12 +305,32 @@
         "branchChanges.sortByChanges": {
           "type": "boolean",
           "default": false,
-          "description": "When enabled, sort files by effective content churn (fewest first), ignoring identical lines that only moved or were reordered. Takes precedence over Sort by Status. Reviewed-to-bottom still applies when that setting is on."
+          "description": "When enabled, sort files by per-line change count with whitespace ignored (git diff --ignore-all-space), fewest first. Takes precedence over Sort by Status. Reviewed-to-bottom still applies when that setting is on."
         },
         "branchChanges.showMovedLineChanges": {
           "type": "boolean",
-          "default": true,
-          "description": "When enabled, file change counts (+N −M) include identical lines that only moved or were reordered. When disabled, counts show unique content changes only (moved lines excluded)."
+          "default": false,
+          "description": "When enabled, file change counts (+N −M) use raw git numstat (includes whitespace-only line edits). When disabled (default), counts use per-line numstat with all whitespace ignored (git diff --ignore-all-space)."
+        },
+        "branchChanges.gitDiffAlgorithm": {
+          "type": "string",
+          "enum": [
+            "myers",
+            "histogram",
+            "patience",
+            "minimal"
+          ],
+          "default": "histogram",
+          "description": "Git diff algorithm used for Branch Changes line counts (raw and ignore-all-space numstat). Does not control the VS Code diff editor appearance."
+        },
+        "branchChanges.diffEditorAlgorithm": {
+          "type": "string",
+          "enum": [
+            "legacy",
+            "advanced"
+          ],
+          "default": "advanced",
+          "description": "VS Code diff editor algorithm applied when opening a file from Branch Changes (sets diffEditor.diffAlgorithm). Git histogram/patience cannot be used in the editor."
         },
         "branchChanges.openNextOnReviewed": {
           "type": "boolean",
@@ -330,7 +350,7 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "typecheck": "tsc --noEmit -p ./",
-    "test": "npm run compile && node --test out/git/contentChurn.test.js out/git/changeStats.test.js out/model/changeTreeModel.test.js",
+    "test": "npm run compile && node --test out/git/changeStats.test.js out/model/changeTreeModel.test.js",
     "watch": "tsc --watch -p ./"
   },
   "devDependencies": {

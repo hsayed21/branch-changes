@@ -4,17 +4,18 @@ import {
   FileChangeStats,
   displayChangeCounts,
   formatChangeStatsDescription,
-  loadChangeStats
+  loadChangeStats,
+  normalizeGitDiffAlgorithm
 } from '../git/changeStats';
 import { createChangeResource, diffUrisForChange } from '../git/changeResources';
-import { lineContentChurn } from '../git/contentChurn';
 import {
   getGitApi,
   GitApi,
   GitChange,
   GitRepository,
   GitStatus,
-  repositoryDisplayName
+  repositoryDisplayName,
+  waitForGitInitialized
 } from '../git/gitApi';
 import {
   activateGitSourceControl,
@@ -61,6 +62,12 @@ export class BranchChangesTreeProvider
 
   private readonly disposables: vscode.Disposable[] = [];
   private readonly fileRuntime = new Map<string, FileRuntime>();
+  /**
+   * Last Branch Changes file we successfully resolved from an editor/tab.
+   * Kept across brief focus loss (e.g. clicking the editor-title Mark Reviewed
+   * button) so mark/unmark still has a target when activeTextEditor is cleared.
+   */
+  private lastActiveChangeRelativePath: string | undefined;
 
   private reviewFilter: ReviewFilter;
   private viewMode: ViewMode;
@@ -114,7 +121,8 @@ export class BranchChangesTreeProvider
         if (
           event.affectsConfiguration('branchChanges.sortReviewedToBottom') ||
           event.affectsConfiguration('branchChanges.sortByStatus') ||
-          event.affectsConfiguration('branchChanges.sortByChanges')
+          event.affectsConfiguration('branchChanges.sortByChanges') ||
+          event.affectsConfiguration('branchChanges.gitDiffAlgorithm')
         ) {
           void this.refresh(undefined, { allowPick: false });
         }
@@ -126,6 +134,9 @@ export class BranchChangesTreeProvider
         }
         if (event.affectsConfiguration('branchChanges.showMovedLineChanges')) {
           this.notifyTreeIfVisible();
+        }
+        if (event.affectsConfiguration('branchChanges.diffEditorAlgorithm')) {
+          void this.applyDiffEditorAlgorithm();
         }
       }),
       vscode.window.onDidChangeActiveTextEditor(() => {
@@ -139,6 +150,7 @@ export class BranchChangesTreeProvider
       })
     );
     this.updateListPathPartsStatusBar();
+    void this.applyDiffEditorAlgorithm();
   }
 
   attachTreeView(treeView: vscode.TreeView<ChangeNode>): void {
@@ -386,23 +398,25 @@ export class BranchChangesTreeProvider
     try {
       const git = await getGitApi();
       this.watchGitApi(git);
+      await waitForGitInitialized(git);
       await this.syncMultiRepoContext(git);
 
-      let repository =
-        preferredRepository ??
-        this.resolveStickyRepository(git) ??
-        git.repositories.find(entry => entry.ui.selected) ??
-        this.repository;
-      if (!repository && allowPick) {
-        repository = await selectRepository(git, undefined, {
-          savedRepositoryUri: this.context.workspaceState.get<string>(
-            SELECTED_REPO_KEY
-          )
-        });
-      }
+      const repository = await this.resolveRepositoryForRefresh(
+        git,
+        preferredRepository,
+        allowPick
+      );
       if (!repository) {
-        this.resetSnapshot();
-        this.setMessage('No Git repository selected.');
+        const saved = this.context.workspaceState.get<string>(SELECTED_REPO_KEY);
+        this.resetChangeData();
+        this.repository = undefined;
+        this.setMessage(
+          saved
+            ? 'Waiting for the saved Git repository…'
+            : git.repositories.length > 1
+              ? 'Select a Git repository to see branch changes.'
+              : 'No Git repository selected.'
+        );
         this.updateTreeDescription(git);
         this.changeEmitter.fire();
         await this.syncActiveChangeContext();
@@ -410,6 +424,7 @@ export class BranchChangesTreeProvider
       }
 
       this.repository = repository;
+      // Persist only the repo we are actually showing (including restored saved).
       await this.context.workspaceState.update(
         SELECTED_REPO_KEY,
         repository.rootUri.toString()
@@ -453,7 +468,8 @@ export class BranchChangesTreeProvider
         changeStats = await loadChangeStats(
           repository.rootUri.fsPath,
           mergeBase,
-          headRef
+          headRef,
+          this.gitDiffAlgorithm()
         );
       } catch {
         // Counts are best-effort; the tree still works without them.
@@ -470,18 +486,11 @@ export class BranchChangesTreeProvider
         );
         const contentHash = await hashChangeAtHead(git, change, headRef);
         activeHashes.set(relativePath, contentHash);
-        const baseStats = changeStats.get(relativePath) ?? {
+        const stats = changeStats.get(relativePath) ?? {
           additions: 0,
           deletions: 0,
           binary: false
         };
-        const stats = await withContentChurn(
-          git,
-          change,
-          mergeBase,
-          headRef,
-          baseStats
-        );
         files.push({
           relativePath,
           status: change.status,
@@ -534,7 +543,9 @@ export class BranchChangesTreeProvider
     }
   }
 
-  async toggleReviewed(node?: ChangeNode): Promise<void> {
+  async toggleReviewed(
+    node?: ChangeNode | vscode.Uri | string | readonly vscode.Uri[]
+  ): Promise<void> {
     const file = this.resolveFileNode(node);
     if (!file) {
       void vscode.window.showInformationMessage(
@@ -586,6 +597,19 @@ export class BranchChangesTreeProvider
     await this.openAdjacentUnreviewed(-1);
   }
 
+  /** Open a file diff from the tree (applies diffEditorAlgorithm first). */
+  async openFileDiff(
+    relativePath: string,
+    options?: { preview?: boolean }
+  ): Promise<void> {
+    await this.openFileByPath(relativePath, options);
+  }
+
+  /** Apply Branch Changes diff editor algorithm setting to VS Code. */
+  async ensureDiffEditorAlgorithm(): Promise<void> {
+    await this.applyDiffEditorAlgorithm();
+  }
+
   async clearMarks(): Promise<void> {
     if (!this.reviewState) {
       void vscode.window.showInformationMessage(
@@ -623,6 +647,7 @@ export class BranchChangesTreeProvider
       createChangeResource(this.git!, change, this.mergeBase!, this.headRef!)
     );
     const title = `Changes in ${this.headName} from ${this.baseRef}`;
+    await this.applyDiffEditorAlgorithm();
     await vscode.commands.executeCommand('vscode.changes', title, resources);
   }
 
@@ -801,7 +826,45 @@ export class BranchChangesTreeProvider
   private showMovedLineChanges(): boolean {
     return vscode.workspace
       .getConfiguration('branchChanges')
-      .get<boolean>('showMovedLineChanges', true);
+      .get<boolean>('showMovedLineChanges', false);
+  }
+
+  private gitDiffAlgorithm() {
+    return normalizeGitDiffAlgorithm(
+      vscode.workspace
+        .getConfiguration('branchChanges')
+        .get<string>('gitDiffAlgorithm')
+    );
+  }
+
+  private diffEditorAlgorithm(): 'legacy' | 'advanced' {
+    const value = vscode.workspace
+      .getConfiguration('branchChanges')
+      .get<string>('diffEditorAlgorithm', 'advanced');
+    return value === 'legacy' ? 'legacy' : 'advanced';
+  }
+
+  /**
+   * Sync VS Code's diff editor algorithm from the Branch Changes setting.
+   * vscode.diff cannot take an algorithm argument; it reads diffEditor.diffAlgorithm.
+   */
+  private async applyDiffEditorAlgorithm(): Promise<void> {
+    const wanted = this.diffEditorAlgorithm();
+    const config = vscode.workspace.getConfiguration('diffEditor');
+    const current = config.get<string>('diffAlgorithm');
+    if (current === wanted) {
+      return;
+    }
+    const target =
+      vscode.workspace.workspaceFolders &&
+      vscode.workspace.workspaceFolders.length > 0
+        ? vscode.ConfigurationTarget.Workspace
+        : vscode.ConfigurationTarget.Global;
+    try {
+      await config.update('diffAlgorithm', wanted, target);
+    } catch {
+      // Best-effort; opening the diff still works with the user's current setting.
+    }
   }
 
   private sortOptions(): {
@@ -840,19 +903,61 @@ export class BranchChangesTreeProvider
     }
   }
 
-  private resolveFileNode(node?: ChangeNode): ChangeFileNode | undefined {
-    if (node?.kind === 'file') {
+  private resolveFileNode(
+    node?: ChangeNode | vscode.Uri | string | readonly vscode.Uri[]
+  ): ChangeFileNode | undefined {
+    if (node && typeof node === 'object' && 'kind' in node && node.kind === 'file') {
       return node;
     }
+
+    if (typeof node === 'string' && node.length > 0) {
+      const fromPath = this.fileNodeByRelativePath(node);
+      if (fromPath) {
+        return fromPath;
+      }
+    }
+
+    for (const uri of commandArgUris(node)) {
+      const relativePath = this.relativePathForOpenUri(uri);
+      if (!relativePath) {
+        continue;
+      }
+      const fromUri = this.fileNodeByRelativePath(relativePath);
+      if (fromUri) {
+        this.lastActiveChangeRelativePath = fromUri.relativePath;
+        return fromUri;
+      }
+    }
+
     const fromEditor = this.fileFromActiveEditor();
     if (fromEditor) {
+      this.lastActiveChangeRelativePath = fromEditor.relativePath;
       return fromEditor;
     }
-    const selected = this.treeView?.selection[0];
-    if (selected?.kind === 'file') {
+
+    const selected = this.treeView?.selection.find(
+      (entry): entry is ChangeFileNode => entry.kind === 'file'
+    );
+    if (selected) {
       return selected;
     }
+
+    if (this.lastActiveChangeRelativePath) {
+      return this.fileNodeByRelativePath(this.lastActiveChangeRelativePath);
+    }
+
     return undefined;
+  }
+
+  private fileNodeByRelativePath(
+    relativePath: string
+  ): ChangeFileNode | undefined {
+    if (!this.root) {
+      return undefined;
+    }
+    return flattenChangeFiles(this.root, {
+      ...this.sortOptions()
+    }).find(entry => entry.relativePath === relativePath);
   }
 
   private fileFromActiveEditor(): ChangeFileNode | undefined {
@@ -864,9 +969,7 @@ export class BranchChangesTreeProvider
       if (!relativePath) {
         continue;
       }
-      const file = flattenChangeFiles(this.root, {
-        ...this.sortOptions()
-      }).find(entry => entry.relativePath === relativePath);
+      const file = this.fileNodeByRelativePath(relativePath);
       if (file) {
         return file;
       }
@@ -879,19 +982,54 @@ export class BranchChangesTreeProvider
       return undefined;
     }
 
+    const openRaw = uriPathForMatch(uri);
+    const openPath = normalizeFsPath(openRaw);
+    if (!openPath) {
+      return undefined;
+    }
+
     for (const [relativePath, runtime] of this.fileRuntime) {
       const change = runtime.gitChange;
-      if (sameFilePath(uri, change.uri) || sameFilePath(uri, change.originalUri)) {
-        return relativePath;
+      const diff =
+        this.git && this.mergeBase && this.headRef
+          ? diffUrisForChange(
+              this.git,
+              change,
+              this.mergeBase,
+              this.headRef
+            )
+          : undefined;
+      const candidates = [
+        change.uri,
+        change.originalUri,
+        diff?.left,
+        diff?.right
+      ];
+      for (const candidate of candidates) {
+        if (!candidate) {
+          continue;
+        }
+        if (sameFilePath(uri, candidate)) {
+          return relativePath;
+        }
+        const candidatePath = normalizeFsPath(uriPathForMatch(candidate));
+        if (candidatePath && candidatePath === openPath) {
+          return relativePath;
+        }
       }
     }
 
-    if (uri.scheme === 'file') {
+    if (openRaw) {
       const relativePath = toPosixRelativePath(
         this.repository.rootUri.fsPath,
-        uri.fsPath
+        openRaw
       );
-      if (this.fileRuntime.has(relativePath)) {
+      if (
+        relativePath &&
+        !relativePath.startsWith('..') &&
+        !/^[a-zA-Z]:/.test(relativePath) &&
+        this.fileRuntime.has(relativePath)
+      ) {
         return relativePath;
       }
     }
@@ -1009,10 +1147,12 @@ export class BranchChangesTreeProvider
       return;
     }
 
-    const command = this.openDiffCommand(file, options);
+    const command = this.buildEditorOpenCommand(file, options);
     if (!command?.arguments) {
       return;
     }
+    this.lastActiveChangeRelativePath = relativePath;
+    await this.applyDiffEditorAlgorithm();
     await vscode.commands.executeCommand(command.command, ...command.arguments);
     await this.syncActiveChangeContext();
   }
@@ -1035,19 +1175,61 @@ export class BranchChangesTreeProvider
 
   private async syncActiveChangeContext(): Promise<void> {
     const file = this.fileFromActiveEditor();
+    if (file) {
+      this.lastActiveChangeRelativePath = file.relativePath;
+    } else if (vscode.window.activeTextEditor) {
+      // A real non-change editor is focused — drop the sticky fallback.
+      this.lastActiveChangeRelativePath = undefined;
+    }
+    // When activeTextEditor is missing (title-bar click), keep the sticky path.
+
+    const active =
+      file ??
+      (this.lastActiveChangeRelativePath
+        ? this.fileNodeByRelativePath(this.lastActiveChangeRelativePath)
+        : undefined);
+
     await vscode.commands.executeCommand(
       'setContext',
       'branchChanges.activeChange',
-      !!file
+      !!active
     );
     await vscode.commands.executeCommand(
       'setContext',
       'branchChanges.activeReviewed',
-      !!file?.reviewed
+      !!active?.reviewed
     );
   }
 
   private openDiffCommand(
+    file: ChangeFileNode,
+    options?: { preview?: boolean }
+  ): vscode.Command | undefined {
+    const runtime = this.fileRuntime.get(file.relativePath);
+    if (!runtime || !this.git || !this.mergeBase || !this.headRef) {
+      return undefined;
+    }
+
+    const { left, right } = diffUrisForChange(
+      this.git,
+      runtime.gitChange,
+      this.mergeBase,
+      this.headRef
+    );
+
+    // Route through our command so diffEditorAlgorithm is applied first.
+    if (left || right) {
+      return {
+        command: 'branchChanges.openFileDiff',
+        title: 'Open Diff',
+        arguments: [file.relativePath, options]
+      };
+    }
+    return undefined;
+  }
+
+  /** Real vscode.diff / vscode.open command (no Branch Changes wrapper). */
+  private buildEditorOpenCommand(
     file: ChangeFileNode,
     options?: { preview?: boolean }
   ): vscode.Command | undefined {
@@ -1107,7 +1289,15 @@ export class BranchChangesTreeProvider
       git.onDidOpenRepository(repository => {
         this.bindRepositoryUi(repository);
         void this.syncMultiRepoContext(git);
-        this.scheduleRefresh();
+        const saved = this.context.workspaceState.get<string>(SELECTED_REPO_KEY);
+        // As soon as the saved repo appears after reload, restore it and load files.
+        if (saved && repository.rootUri.toString() === saved) {
+          void this.refresh(repository, { allowPick: false });
+          return;
+        }
+        if (!this.repository) {
+          this.scheduleRefresh();
+        }
       }),
       git.onDidCloseRepository(repository => {
         this.unbindRepositoryUi(repository);
@@ -1201,6 +1391,53 @@ export class BranchChangesTreeProvider
     return git.repositories.find(entry => entry.rootUri.toString() === saved);
   }
 
+  /**
+   * Resolve which repo to show: preferred → saved/sticky → SCM selected →
+   * single repo → optional quick-pick. Never picks a different repo while a
+   * saved URI still exists but is not open yet (avoids clobbering on startup).
+   */
+  private async resolveRepositoryForRefresh(
+    git: GitApi,
+    preferredRepository: GitRepository | undefined,
+    allowPick: boolean
+  ): Promise<GitRepository | undefined> {
+    if (preferredRepository) {
+      const open = git.repositories.find(
+        entry =>
+          entry.rootUri.toString() === preferredRepository.rootUri.toString()
+      );
+      if (open) {
+        return open;
+      }
+    }
+
+    const sticky = this.resolveStickyRepository(git);
+    if (sticky) {
+      return sticky;
+    }
+
+    const saved = this.context.workspaceState.get<string>(SELECTED_REPO_KEY);
+    // If a saved URI exists but is not open after Git finished initializing,
+    // fall through to SCM / single-repo / pick rather than hanging forever.
+
+    const scmSelected = git.repositories.find(entry => entry.ui.selected);
+    if (scmSelected) {
+      return scmSelected;
+    }
+
+    if (git.repositories.length === 1) {
+      return git.repositories[0];
+    }
+
+    if (allowPick && git.repositories.length > 1) {
+      return selectRepository(git, undefined, {
+        savedRepositoryUri: saved
+      });
+    }
+
+    return undefined;
+  }
+
   private async syncMultiRepoContext(git: GitApi): Promise<void> {
     await vscode.commands.executeCommand(
       'setContext',
@@ -1224,6 +1461,7 @@ export class BranchChangesTreeProvider
   private resetChangeData(): void {
     this.root = undefined;
     this.fileRuntime.clear();
+    this.lastActiveChangeRelativePath = undefined;
     this.mergeBase = undefined;
     this.headRef = undefined;
     this.baseRef = undefined;
@@ -1254,6 +1492,14 @@ type ChangeFileNode = Extract<ChangeNode, { kind: 'file' }>;
 
 function activeEditorUris(): vscode.Uri[] {
   const uris: vscode.Uri[] = [];
+
+  // Prefer the focused editor first — title-bar clicks can clear it later, but
+  // while it exists it is the best signal for multi-diff / nested editors.
+  const editorUri = vscode.window.activeTextEditor?.document.uri;
+  if (editorUri) {
+    uris.push(editorUri);
+  }
+
   const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
   const input = tab?.input;
   if (input instanceof vscode.TabInputTextDiff) {
@@ -1261,24 +1507,62 @@ function activeEditorUris(): vscode.Uri[] {
   } else if (input instanceof vscode.TabInputText) {
     uris.push(input.uri);
   }
-
-  const editorUri = vscode.window.activeTextEditor?.document.uri;
-  if (editorUri) {
-    uris.push(editorUri);
-  }
+  // Multi-diff tabs: do not expand every textDiff here — that would mark the
+  // wrong file. Rely on activeTextEditor + lastActiveChangeRelativePath.
 
   return uris;
+}
+
+/** Collect URIs passed by editor/title or other menu invocations. */
+function commandArgUris(arg: unknown): vscode.Uri[] {
+  if (!arg) {
+    return [];
+  }
+  if (arg instanceof vscode.Uri) {
+    return [arg];
+  }
+  if (Array.isArray(arg)) {
+    return arg.filter((entry): entry is vscode.Uri => entry instanceof vscode.Uri);
+  }
+  return [];
+}
+
+/** File path from file: or git: URIs (git stores the real path in the query). */
+function uriPathForMatch(uri: vscode.Uri): string | undefined {
+  if (uri.scheme === 'git' && uri.query) {
+    try {
+      const query = JSON.parse(uri.query) as { path?: string };
+      if (typeof query.path === 'string' && query.path.length > 0) {
+        return query.path;
+      }
+    } catch {
+      // Fall through to fsPath / path.
+    }
+  }
+  try {
+    if (uri.fsPath) {
+      return uri.fsPath;
+    }
+  } catch {
+    // Some URI schemes do not support fsPath.
+  }
+  return uri.path || undefined;
+}
+
+function normalizeFsPath(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return value.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
 }
 
 function sameFilePath(a: vscode.Uri, b: vscode.Uri): boolean {
   if (a.toString() === b.toString()) {
     return true;
   }
-  try {
-    return a.fsPath === b.fsPath;
-  } catch {
-    return false;
-  }
+  const left = normalizeFsPath(uriPathForMatch(a));
+  const right = normalizeFsPath(uriPathForMatch(b));
+  return Boolean(left && right && left === right);
 }
 
 function findParent(
@@ -1408,47 +1692,5 @@ function statusLabel(status: number): string {
       return 'Copied';
     default:
       return 'Modified';
-  }
-}
-
-const textDecoder = new TextDecoder('utf8');
-
-async function withContentChurn(
-  git: GitApi,
-  change: GitChange,
-  mergeBase: string,
-  headRef: string,
-  stats: FileChangeStats
-): Promise<FileChangeStats> {
-  if (stats.binary) {
-    return stats;
-  }
-
-  const { left, right } = diffUrisForChange(git, change, mergeBase, headRef);
-  const before = await readGitText(left);
-  const after = await readGitText(right);
-  if (before === undefined && after === undefined) {
-    return stats;
-  }
-
-  const churn = lineContentChurn(before ?? '', after ?? '');
-  return {
-    ...stats,
-    contentAdditions: churn.additions,
-    contentDeletions: churn.deletions
-  };
-}
-
-async function readGitText(
-  uri: vscode.Uri | undefined
-): Promise<string | undefined> {
-  if (!uri) {
-    return undefined;
-  }
-  try {
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    return textDecoder.decode(bytes);
-  } catch {
-    return undefined;
   }
 }

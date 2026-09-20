@@ -7,6 +7,28 @@ export async function getGitApi(): Promise<GitApi> {
   return gitApiPromise;
 }
 
+/** Wait until the Git extension finished its initial repository scan. */
+export async function waitForGitInitialized(git: GitApi): Promise<void> {
+  // Older Git builds may omit state; treat that as already ready.
+  if (!git.onDidChangeState || git.state === 'initialized' || git.state == null) {
+    return;
+  }
+
+  await new Promise<void>(resolve => {
+    const subscription = git.onDidChangeState(state => {
+      if (state === 'initialized') {
+        subscription.dispose();
+        resolve();
+      }
+    });
+    // State may flip between subscribe and check.
+    if (git.state === 'initialized') {
+      subscription.dispose();
+      resolve();
+    }
+  });
+}
+
 async function activateGitApi(): Promise<GitApi> {
   const extension = vscode.extensions.getExtension<GitExtension>('vscode.git');
   if (!extension) {
@@ -50,6 +72,8 @@ export interface GitExtension {
 }
 
 export interface GitApi {
+  readonly state: 'uninitialized' | 'initialized';
+  readonly onDidChangeState: vscode.Event<'uninitialized' | 'initialized'>;
   readonly repositories: readonly GitRepository[];
   readonly onDidOpenRepository: vscode.Event<GitRepository>;
   readonly onDidCloseRepository: vscode.Event<GitRepository>;

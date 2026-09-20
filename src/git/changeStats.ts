@@ -3,44 +3,99 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-export type FileChangeStats = {
-  /** Raw git numstat additions (for display). */
+export type GitDiffAlgorithm = 'myers' | 'histogram' | 'patience' | 'minimal';
+
+export const GIT_DIFF_ALGORITHMS: readonly GitDiffAlgorithm[] = [
+  'myers',
+  'histogram',
+  'patience',
+  'minimal'
+] as const;
+
+export type NumstatEntry = {
   additions: number;
-  /** Raw git numstat deletions (for display). */
+  deletions: number;
+  binary: boolean;
+};
+
+export type FileChangeStats = {
+  /** Raw git numstat additions. */
+  additions: number;
+  /** Raw git numstat deletions. */
   deletions: number;
   binary: boolean;
   /**
-   * Line-multiset additions used for Sort by Changes.
-   * Ignores identical lines that only moved; falls back to `additions` when unset.
+   * Per-line additions from `git diff --numstat --ignore-all-space`.
+   * Falls back to `additions` when unset.
    */
   contentAdditions?: number;
   /**
-   * Line-multiset deletions used for Sort by Changes.
-   * Ignores identical lines that only moved; falls back to `deletions` when unset.
+   * Per-line deletions from `git diff --numstat --ignore-all-space`.
+   * Falls back to `deletions` when unset.
    */
   contentDeletions?: number;
 };
 
+export function normalizeGitDiffAlgorithm(
+  value: string | undefined
+): GitDiffAlgorithm {
+  if (
+    value === 'myers' ||
+    value === 'histogram' ||
+    value === 'patience' ||
+    value === 'minimal'
+  ) {
+    return value;
+  }
+  return 'histogram';
+}
+
 /**
- * Line change counts between two commits (git diff --numstat).
- * Keys are POSIX paths relative to the repository root (new path for renames).
+ * Line change counts between two commits.
+ * Loads raw numstat and ignore-all-space numstat with the given diff algorithm.
  */
 export async function loadChangeStats(
   repoRootFsPath: string,
   mergeBase: string,
-  headRef: string
+  headRef: string,
+  algorithm: GitDiffAlgorithm = 'histogram'
 ): Promise<Map<string, FileChangeStats>> {
-  const { stdout } = await execFileAsync(
-    'git',
-    ['diff', '--numstat', '--find-renames', mergeBase, headRef],
-    {
-      cwd: repoRootFsPath,
-      maxBuffer: 32 * 1024 * 1024,
-      windowsHide: true
-    }
-  );
+  const [raw, ignoreSpace] = await Promise.all([
+    runNumstat(repoRootFsPath, mergeBase, headRef, algorithm, false),
+    runNumstat(repoRootFsPath, mergeBase, headRef, algorithm, true)
+  ]);
+  return mergeChangeStats(raw, ignoreSpace);
+}
 
-  const stats = new Map<string, FileChangeStats>();
+async function runNumstat(
+  repoRootFsPath: string,
+  mergeBase: string,
+  headRef: string,
+  algorithm: GitDiffAlgorithm,
+  ignoreAllSpace: boolean
+): Promise<Map<string, NumstatEntry>> {
+  const args = [
+    'diff',
+    '--numstat',
+    '--find-renames',
+    `--diff-algorithm=${algorithm}`
+  ];
+  if (ignoreAllSpace) {
+    args.push('--ignore-all-space');
+  }
+  args.push(mergeBase, headRef);
+
+  const { stdout } = await execFileAsync('git', args, {
+    cwd: repoRootFsPath,
+    maxBuffer: 32 * 1024 * 1024,
+    windowsHide: true
+  });
+  return parseNumstatOutput(stdout);
+}
+
+/** Parse `git diff --numstat` stdout into a path → counts map. */
+export function parseNumstatOutput(stdout: string): Map<string, NumstatEntry> {
+  const stats = new Map<string, NumstatEntry>();
   for (const line of stdout.split(/\r?\n/)) {
     if (!line) {
       continue;
@@ -75,9 +130,27 @@ export async function loadChangeStats(
   return stats;
 }
 
+/** Combine raw and ignore-all-space numstat maps. */
+export function mergeChangeStats(
+  raw: Map<string, NumstatEntry>,
+  ignoreSpace: Map<string, NumstatEntry>
+): Map<string, FileChangeStats> {
+  const stats = new Map<string, FileChangeStats>();
+  for (const [relativePath, entry] of raw) {
+    const spaced = ignoreSpace.get(relativePath);
+    stats.set(relativePath, {
+      additions: entry.additions,
+      deletions: entry.deletions,
+      binary: entry.binary,
+      contentAdditions: spaced?.additions ?? entry.additions,
+      contentDeletions: spaced?.deletions ?? entry.deletions
+    });
+  }
+  return stats;
+}
+
 export function changeQuantity(stats: FileChangeStats | undefined): number {
   if (!stats || stats.binary) {
-    // Push binary / unknown files after numeric counts when sorting ascending.
     return Number.MAX_SAFE_INTEGER;
   }
   const additions = stats.contentAdditions ?? stats.additions;
@@ -87,7 +160,7 @@ export function changeQuantity(stats: FileChangeStats | undefined): number {
 
 /**
  * Counts shown in the tree badge / tooltip.
- * When `includeMovedLineChanges` is false, identical moved lines are excluded.
+ * When `includeMovedLineChanges` is false, use ignore-all-space line counts.
  */
 export function displayChangeCounts(
   stats: FileChangeStats,
@@ -105,7 +178,7 @@ export function displayChangeCounts(
 export function formatChangeStatsDescription(
   statusLetter: string,
   stats: FileChangeStats | undefined,
-  includeMovedLineChanges = true
+  includeMovedLineChanges = false
 ): string {
   if (!stats) {
     return statusLetter;
